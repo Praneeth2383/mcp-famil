@@ -180,18 +180,75 @@ fastmcp dev main.py
 > instead of `"http"`. Check `fastmcp --version` / release notes if the
 > server fails to start.
 
-## Deployment (Render)
+## Using Supabase as the database
 
-`render.yaml` is included for one-file deploys. Manually, on Render:
+Supabase's database is plain PostgreSQL, so **no code changes are
+needed** — just point `DATABASE_URL` at it:
+
+1. Create a project at [supabase.com](https://supabase.com).
+2. Go to **Project Settings → Database → Connection string → URI**.
+   Use the **Session pooler** (or **Transaction pooler**) connection
+   string, not the direct connection — it's the one meant for
+   long-running apps and works fine with this project's connection pool.
+3. Copy it into `DATABASE_URL` in your `.env` (or your host's environment
+   variables), replacing `[YOUR-PASSWORD]` with your actual DB password:
+   ```text
+   DATABASE_URL=postgresql://postgres.xxxxxxxxxxxx:[YOUR-PASSWORD]@aws-0-xx-xxxx-x.pooler.supabase.com:5432/postgres
+   ```
+4. Run `python main.py` (or redeploy your host) — `init_db()` creates the
+   `family_members`, `expenses`, `income`, and `budgets` tables on Supabase
+   automatically on first boot. `SUPABASE_URL`/`SUPABASE_KEY` are **not**
+   needed for this — those are only for the Supabase client SDK, which
+   this project doesn't use.
+
+## Deployment
+
+You need somewhere to run the always-on Python process — Supabase only
+hosts the database, not the app. Any host that gives you a public
+**HTTPS** URL works (Claude's remote connector requires HTTPS, not plain
+HTTP). Whatever you choose, the server just needs:
+- `DATABASE_URL` set to your Supabase connection string
+- To listen on `0.0.0.0:$PORT` (already handled by `main.py`)
+- The `/mcp` path reachable over HTTPS at the root of your public URL
+
+`render.yaml` is included for a one-file Render deploy if you want it:
 - **Build command:** `pip install -r requirements.txt`
 - **Start command:** `python main.py`
-- **Environment variables:** `DATABASE_URL`, `LLM_API_KEY` (optional),
-  `ANTHROPIC_MODEL` (optional)
+- **Environment variables:** `DATABASE_URL`, `LLM_API_KEY` (optional), `ANTHROPIC_MODEL` (optional)
 
-Render provides `PORT` automatically; `main.py` binds to
-`0.0.0.0:$PORT` and exposes `/mcp`. Once deployed, add
-`https://<your-app>.onrender.com/mcp` as a remote MCP connector in your
-Claude client.
+If you're self-hosting on your own server/VPS instead, make sure a
+reverse proxy (Caddy, nginx + certbot, etc.) terminates TLS in front of
+`main.py` and forwards to it — Claude cannot connect to a bare `http://`
+URL or a self-signed certificate.
+
+### Verify the deployed server before adding it to Claude
+
+```bash
+curl -s -D - -o /dev/null -X POST https://<your-domain>/mcp \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}'
+```
+You should get `HTTP/1.1 200` back with a `serverInfo` block naming
+"Family Expense MCP". If this fails, fix it before adding the connector —
+Claude will hit the same URL.
+
+## Add it to Claude as a custom connector
+
+1. On [claude.ai](https://claude.ai), go to **Settings → Connectors**.
+2. Click **Add custom connector**.
+3. Enter a name (e.g. "Family Expense AI") and the URL:
+   `https://<your-domain>/mcp`
+4. Save, then enable the connector in a chat (the tool/connector picker
+   below the message box).
+5. Test it: ask Claude something like *"Add a family member named
+   Praneeth, relationship Self"* or *"I spent ₹500 on lunch today"* — Claude
+   should call the corresponding MCP tool and show the formatted result.
+
+Every family member can add the same URL as their own custom connector
+from their own claude.ai account — they all talk to the same hosted
+server and the same Supabase database, so everyone's expenses land in one
+shared, per-person-tracked source of truth (see "Multi-user family usage"
+above).
 
 ## Example natural-language flow
 
